@@ -1,0 +1,60 @@
+<!doctype html>
+<meta charset="utf-8" />
+<body>
+  <h3>WebRTC Publisher → Server MP4 Record</h3>
+  <button id="btn-start">Start Publish</button>
+  <button id="btn-stop">Stop</button>
+  <p id="log">idle</p>
+
+  <script>
+    const log = (...a) => document.querySelector('#log').textContent = a.join(' ');
+    let pc;
+
+    async function start() {
+      // 로컬 개발은 http://localhost 예외. 운영 시 HTTPS 필요
+      pc = new RTCPeerConnection({
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" }
+          // 실제 서비스는 TURN 필수 (예: coturn)
+        ]
+      });
+
+      // 카메라/마이크
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+
+      // (선택) H.264 선호 - 서버 인코딩 부하 줄이는 데 도움
+      // 일부 브라우저는 Transceiver API로 setCodecPreferences가 필요
+      const transceiverV = pc.addTransceiver(stream.getVideoTracks()[0], { direction: "sendonly" });
+      const capsV = RTCRtpSender.getCapabilities('video');
+      if (capsV && transceiverV.setCodecPreferences) {
+        const h264 = (capsV.codecs || []).filter(c => c.mimeType === 'video/H264');
+        if (h264.length) transceiverV.setCodecPreferences(h264.concat((capsV.codecs||[]).filter(c=>c.mimeType!=='video/H264')));
+      }
+      const transceiverA = pc.addTransceiver(stream.getAudioTracks()[0], { direction: "sendonly" });
+
+      // offer 생성/전송
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      const res = await fetch('/publish/offer', {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json' },
+        body: JSON.stringify({ sdp: offer.sdp, type: offer.type })
+      });
+      const ans = await res.json();
+      await pc.setRemoteDescription({ sdp: ans.sdp, type: ans.type });
+
+      log('Publishing…');
+    }
+
+    async function stop() {
+      try { await fetch('/publish/stop', { method:'POST' }); } catch {}
+      pc?.getSenders()?.forEach(s => s.track && s.track.stop());
+      pc?.close();
+      log('Stopped.');
+    }
+
+    document.querySelector('#btn-start').onclick = start;
+    document.querySelector('#btn-stop').onclick = stop;
+  </script>
+</body>
